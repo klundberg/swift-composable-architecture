@@ -7,8 +7,10 @@ public struct Effect<Action>: Sendable {
   enum Operation: Sendable {
     case none
     case publisher(AnyPublisher<Action, Never>)
-    case run(TaskPriority? = nil, @Sendable (_ send: Send<Action>) async -> Void)
+    case run(TaskPriority? = nil, SendClosure)
   }
+  
+  public typealias SendClosure = @Sendable (_ send: Send<Action>) async -> Void
 
   @usableFromInline
   let operation: Operation
@@ -223,6 +225,7 @@ public struct Send<Action>: Sendable {
 }
 
 // MARK: - Composing Effects
+import ConcurrencyExtras
 
 extension Effect {
   /// Merges a variadic list of effects together into a single effect, which runs the effects at the
@@ -242,7 +245,33 @@ extension Effect {
   /// - Returns: A new effect
   @inlinable
   public static func merge(_ effects: some Sequence<Self>) -> Self {
-    effects.reduce(.none) { $0.merge(with: $1) }
+    if /*false,*/ #available(iOS 17, tvOS 17, macOS 14, watchOS 10, *) {
+      let effects = Array(effects)
+      return Self(operation: .run { send in
+        await withDiscardingTaskGroup { group in
+          for effect in effects {
+            switch effect.operation {
+            case .none:
+              continue
+              
+            case .publisher(let p):
+              group.addTask {
+                for await value in p.map({ UncheckedSendable($0) }).receive(on: DispatchQueue.main).values {
+                  await send(value.wrappedValue)
+                }
+              }
+            
+            case let .run(priority, operation):
+              group.addTask(priority: priority) {
+                await operation(send)
+              }
+            }
+          }
+        }
+      })
+    } else {
+      return effects.reduce(.none) { $0.merge(with: $1) }
+    }
   }
 
   /// Merges this effect and another into a single effect that runs both at the same time.
@@ -269,12 +298,23 @@ extension Effect {
     case let (.run(lhsPriority, lhsOperation), .run(rhsPriority, rhsOperation)):
       return Self(
         operation: .run { send in
-          await withTaskGroup(of: Void.self) { group in
-            group.addTask(priority: lhsPriority) {
-              await lhsOperation(send)
+          if #available(iOS 17, tvOS 17, macOS 14, watchOS 10, *) {
+            await withDiscardingTaskGroup { group in
+              group.addTask(priority: lhsPriority) {
+                await lhsOperation(send)
+              }
+              group.addTask(priority: rhsPriority) {
+                await rhsOperation(send)
+              }
             }
-            group.addTask(priority: rhsPriority) {
-              await rhsOperation(send)
+          } else {
+            await withTaskGroup(of: Void.self) { group in
+              group.addTask(priority: lhsPriority) {
+                await lhsOperation(send)
+              }
+              group.addTask(priority: rhsPriority) {
+                await rhsOperation(send)
+              }
             }
           }
         }
