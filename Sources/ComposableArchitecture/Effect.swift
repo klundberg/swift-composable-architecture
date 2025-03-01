@@ -258,11 +258,23 @@ extension Effect {
     let effects = UncheckedSendable(effects) // necesssary to pass the effects sequence to the task group.
     
     let allRuns = Self(operation: .run { send in
-      await withTaskGroup(of: Void.self) { group in
-        for effect in effects.value {
-          if case let .run(priority, operation) = effect.operation {
-            group.addTask(priority: priority) {
-              await operation(send)
+      if #available(iOS 17.0, tvOS 17.0, watchOS 10.0, macOS 14.0, *) {
+        await withDiscardingTaskGroup { group in
+          for effect in effects.value {
+            if case let .run(priority, operation) = effect.operation {
+              group.addTask(priority: priority) {
+                await operation(send)
+              }
+            }
+          }
+        }
+      } else {
+        await withTaskGroup(of: Void.self) { group in
+          for effect in effects.value {
+            if case let .run(priority, operation) = effect.operation {
+              group.addTask(priority: priority) {
+                await operation(send)
+              }
             }
           }
         }
@@ -310,12 +322,23 @@ extension Effect {
     case let (.run(lhsPriority, lhsOperation), .run(rhsPriority, rhsOperation)):
       return Self(
         operation: .run { send in
-          await withTaskGroup(of: Void.self) { group in
-            group.addTask(priority: lhsPriority) {
-              await lhsOperation(send)
+          if #available(iOS 17.0, tvOS 17.0, watchOS 10.0, macOS 14.0, *) {
+            await withDiscardingTaskGroup { group in
+              group.addTask(priority: lhsPriority) {
+                await lhsOperation(send)
+              }
+              group.addTask(priority: rhsPriority) {
+                await rhsOperation(send)
+              }
             }
-            group.addTask(priority: rhsPriority) {
-              await rhsOperation(send)
+          } else {
+            await withTaskGroup(of: Void.self) { group in
+              group.addTask(priority: lhsPriority) {
+                await lhsOperation(send)
+              }
+              group.addTask(priority: rhsPriority) {
+                await rhsOperation(send)
+              }
             }
           }
         }

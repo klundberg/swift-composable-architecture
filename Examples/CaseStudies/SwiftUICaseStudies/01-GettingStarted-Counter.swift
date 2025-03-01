@@ -19,6 +19,7 @@ struct Counter {
   enum Action {
     case decrementButtonTapped
     case incrementButtonTapped
+    case appeared
   }
 
   var body: some Reducer<State, Action> {
@@ -30,6 +31,15 @@ struct Counter {
       case .incrementButtonTapped:
         state.count += 1
         return .none
+      case .appeared:
+        var fx: [EffectOf<Self>] = []
+        for _ in 1...10000 {
+          fx.append(.run { send in try await Task.sleep(for: .milliseconds(100)) })
+        }
+        fx.append(.run { send in
+          try await Task.never()
+        })
+        return .merge(fx)
       }
     }
   }
@@ -71,6 +81,9 @@ struct CounterDemoView: View {
         CounterView(store: store)
           .frame(maxWidth: .infinity)
       }
+    }
+    .task {
+      await store.send(.appeared).finish()
     }
     .buttonStyle(.borderless)
     .navigationTitle("Counter demo")
